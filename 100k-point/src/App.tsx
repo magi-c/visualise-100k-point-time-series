@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import { runBenchmark, waitFrames } from './bench/runBenchmark'
@@ -250,18 +250,26 @@ function App() {
               <thead>
                 <tr>
                   <th scope="col">Renderer</th>
-                  <th scope="col">Phase</th>
-                  <th scope="col" className="num">FPS</th>
-                  <th scope="col" className="num">p95 ms</th>
-                  <th scope="col" className="num">Max ms</th>
-                  <th scope="col" className="num" title="Frames over the 60 Hz budget (16.7 ms)">
-                    Over budget
+                  <th scope="col">
+                    <HeaderTip label="Phase" tip={COLUMN_TIPS.phase} align="left" />
                   </th>
-                  <th scope="col" className="num" title="Main-thread tasks over 50 ms">
-                    Long tasks
+                  <th scope="col" className="num">
+                    <HeaderTip label="FPS" tip={COLUMN_TIPS.fps} />
                   </th>
-                  <th scope="col" className="num" title="Used JS heap, Chromium only">
-                    Heap MB
+                  <th scope="col" className="num">
+                    <HeaderTip label="p95 ms" tip={COLUMN_TIPS.p95} />
+                  </th>
+                  <th scope="col" className="num">
+                    <HeaderTip label="Max ms" tip={COLUMN_TIPS.max} />
+                  </th>
+                  <th scope="col" className="num">
+                    <HeaderTip label="Over budget" tip={COLUMN_TIPS.overBudget} />
+                  </th>
+                  <th scope="col" className="num">
+                    <HeaderTip label="Long tasks" tip={COLUMN_TIPS.longTasks} />
+                  </th>
+                  <th scope="col" className="num">
+                    <HeaderTip label="Heap MB" tip={COLUMN_TIPS.heap} />
                   </th>
                 </tr>
               </thead>
@@ -322,6 +330,49 @@ function App() {
         <span>WHEEL TO ZOOM&nbsp;&nbsp; / &nbsp;&nbsp;DRAG TO PAN</span>
       </footer>
     </main>
+  )
+}
+
+const COLUMN_TIPS = {
+  phase:
+    'All 100k visible: the view stays at 98–100% of the data, so every point is drawn (worst case). Zoom & pan: a scripted zoom between 16% and 92% of the data with panning, starting from the full extent.',
+  fps:
+    'Average frames per second over the phase (1000 ÷ mean frame time). Higher is better; 60 is the ceiling on a 60 Hz screen. An average hides stutter, so read it together with p95 and Max.',
+  p95:
+    '95th-percentile frame time: 95% of frames were this fast or faster. Under 16.7 ms means the chart stays smooth at 60 Hz.',
+  max:
+    'The single slowest frame in the phase: the worst hitch a user would notice.',
+  overBudget:
+    'Frames that took longer than the 60 Hz budget (16.7 ms, plus 1 ms tolerance for vsync jitter), out of all recorded frames. Each one is a dropped frame.',
+  longTasks:
+    'Main-thread tasks longer than 50 ms during the phase. While one runs, the page cannot respond to input. Chromium only; always 0 in Firefox and Safari.',
+  heap:
+    'JavaScript heap in use at the end of the phase. Chromium only and coarse; shown as — elsewhere. Does not include canvas pixel memory or the SVG render tree.',
+} as const
+
+/** Column header with a tooltip shown on hover and on keyboard focus. */
+function HeaderTip({
+  label,
+  tip,
+  align = 'right',
+}: {
+  label: string
+  tip: string
+  align?: 'left' | 'right'
+}) {
+  const tipId = useId()
+
+  return (
+    <span className="th-tip" tabIndex={0} aria-describedby={tipId}>
+      {label}
+      <span
+        id={tipId}
+        role="tooltip"
+        className={`th-tip-bubble th-tip-${align}`}
+      >
+        {tip}
+      </span>
+    </span>
   )
 }
 
