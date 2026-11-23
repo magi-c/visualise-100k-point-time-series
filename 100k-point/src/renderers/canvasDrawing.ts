@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 import type { ChartProps } from '../lib/types'
 import {
   CHART_HEIGHT,
@@ -8,7 +8,7 @@ import {
   PLOT_RIGHT,
   PLOT_TOP,
   PLOT_WIDTH,
-  getVisibleRange,
+  getDrawRange,
   getYTicks,
   scaleX,
   scaleY,
@@ -28,14 +28,14 @@ function drawAxes(
   context.fillStyle = '#8b94a5'
 
   for (const tick of getYTicks(data.extent)) {
-    const y = scaleY(tick, data.extent)
+    const y = scaleY(tick.value, data.extent)
     context.beginPath()
     context.strokeStyle = '#263247'
     context.lineWidth = 1
     context.moveTo(PLOT_LEFT, y)
     context.lineTo(PLOT_RIGHT, y)
     context.stroke()
-    context.fillText(`$${tick.toFixed(0)}`, PLOT_LEFT - 10, y)
+    context.fillText(tick.label, PLOT_LEFT - 10, y)
   }
 
   context.beginPath()
@@ -59,6 +59,30 @@ function drawAxes(
   )
 }
 
+interface BucketBuffers {
+  minValues: Float64Array
+  maxValues: Float64Array
+  minIndices: Int32Array
+  maxIndices: Int32Array
+}
+
+// Reused between frames so min/max drawing allocates nothing per frame.
+let bucketBuffers: BucketBuffers | null = null
+
+function getBucketBuffers(bucketCount: number): BucketBuffers {
+  if (!bucketBuffers || bucketBuffers.minValues.length !== bucketCount) {
+    bucketBuffers = {
+      minValues: new Float64Array(bucketCount),
+      maxValues: new Float64Array(bucketCount),
+      minIndices: new Int32Array(bucketCount),
+      maxIndices: new Int32Array(bucketCount),
+    }
+  }
+  bucketBuffers.minValues.fill(Infinity)
+  bucketBuffers.maxValues.fill(-Infinity)
+  return bucketBuffers
+}
+
 function drawMinMax(
   context: CanvasRenderingContext2D,
   values: Float64Array,
@@ -69,16 +93,18 @@ function drawMinMax(
   end: number,
 ) {
   const bucketCount = Math.ceil(PLOT_WIDTH)
-  const minValues = new Float64Array(bucketCount).fill(Infinity)
-  const maxValues = new Float64Array(bucketCount).fill(-Infinity)
-  const minIndices = new Int32Array(bucketCount)
-  const maxIndices = new Int32Array(bucketCount)
+  const { minValues, maxValues, minIndices, maxIndices } =
+    getBucketBuffers(bucketCount)
   const span = viewport.xMax - viewport.xMin
 
   for (let index = start; index < end; index += 1) {
-    const bucket = Math.min(
-      bucketCount - 1,
-      Math.floor(((index - viewport.xMin) / span) * bucketCount),
+    // Clamp both ends: the draw range includes one point outside each edge.
+    const bucket = Math.max(
+      0,
+      Math.min(
+        bucketCount - 1,
+        Math.floor(((index - viewport.xMin) / span) * bucketCount),
+      ),
     )
     const value = values[index]
     if (value < minValues[bucket]) {
@@ -129,7 +155,7 @@ export function drawCanvasChart(
   mode: RenderMode,
 ) {
   drawAxes(context, data, viewport)
-  const { start, end } = getVisibleRange(data.values.length, viewport)
+  const { start, end } = getDrawRange(data.values.length, viewport)
 
   context.save()
   context.beginPath()
@@ -169,7 +195,8 @@ export function useCanvasChart(
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  useEffect(() => {
+  // Layout effect: draw before the browser paints, so no frame shows a stale chart.
+  useLayoutEffect(() => {
     const canvas = canvasRef.current
     const context = canvas?.getContext('2d')
     if (!canvas || !context) {
@@ -177,8 +204,14 @@ export function useCanvasChart(
     }
 
     const pixelRatio = window.devicePixelRatio || 1
-    canvas.width = CHART_WIDTH * pixelRatio
-    canvas.height = CHART_HEIGHT * pixelRatio
+    const width = Math.round(CHART_WIDTH * pixelRatio)
+    const height = Math.round(CHART_HEIGHT * pixelRatio)
+    // Assigning width/height reallocates and clears the backing store,
+    // so only do it when the size actually changes.
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width
+      canvas.height = height
+    }
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
     drawCanvasChart(context, data, viewport, mode)
   }, [data, mode, viewport])

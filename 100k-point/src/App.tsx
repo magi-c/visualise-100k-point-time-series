@@ -1,18 +1,36 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { runBenchmark } from './bench/runBenchmark'
+import { flushSync } from 'react-dom'
+import { runBenchmark, waitFrames } from './bench/runBenchmark'
 import { generateSeries } from './data/generate'
 import { useViewport } from './hooks/useViewport'
 import { getVisibleRange } from './lib/scale'
-import type { BenchmarkResult, ChartProps } from './lib/types'
+import type {
+  BenchmarkPhase,
+  BenchmarkResult,
+  ChartProps,
+  Viewport,
+} from './lib/types'
 import { CanvasChart } from './renderers/CanvasChart'
 import { CanvasMinMaxChart } from './renderers/CanvasMinMaxChart'
 import { SvgChart } from './renderers/SvgChart'
 import './App.css'
 
-const BENCHMARK_DURATION_MS = 2_000
+// ~240 frames per phase at 60 Hz: enough for a stable p95.
+const BENCHMARK_DURATION_MS = 4_000
+// Frames to wait after mounting a chart / resetting the view, so setup work
+// isn't counted in the measurement.
+const WARMUP_FRAMES = 10
 const RENDERERS = ['svg', 'canvas', 'minmax'] as const
 type Renderer = (typeof RENDERERS)[number]
+const BENCHMARK_PHASES: readonly BenchmarkPhase[] = ['full-extent', 'zoom-pan']
+const PHASE_LABEL: Record<BenchmarkPhase, string> = {
+  'full-extent': 'All 100k visible',
+  'zoom-pan': 'Zoom & pan',
+}
+type BenchmarkResults = Partial<
+  Record<Renderer, Partial<Record<BenchmarkPhase, BenchmarkResult>>>
+>
 type ViewportHandlers = ReturnType<typeof useViewport>['handlers']
 
 const RENDERER_INFO: Record<
@@ -51,9 +69,9 @@ function App() {
     onWheel,
     handlers,
   } = useViewport(data.extent)
-  const [benchmarkResults, setBenchmarkResults] = useState<
-    Partial<Record<Renderer, BenchmarkResult>>
-  >({})
+  const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkResults>(
+    {},
+  )
   const [benchmarkRenderer, setBenchmarkRenderer] = useState<Renderer | null>(
     null,
   )
@@ -62,25 +80,47 @@ function App() {
   const visiblePoints = visibleRange.end - visibleRange.start
 
   const handleBenchmark = async () => {
+    // Restored afterwards; the benchmark itself always starts from full extent.
     const initialViewport = { ...viewport }
-    const results: Partial<Record<Renderer, BenchmarkResult>> = {}
+    const fullViewport: Viewport = {
+      xMin: data.extent.xMin,
+      xMax: data.extent.xMax,
+    }
+    // flushSync: render inside the current frame. Without it React 19 may
+    // batch the update and render after paint, so the frame time is wrong.
+    const applyViewport = (next: Viewport) =>
+      flushSync(() => setViewport(next))
+    const results: BenchmarkResults = {}
     setIsBenchmarking(true)
     setBenchmarkResults({})
 
     try {
       for (const renderer of RENDERERS) {
-        setBenchmarkRenderer(renderer)
-        setViewport(initialViewport)
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+        flushSync(() => setBenchmarkRenderer(renderer))
 
-        results[renderer] = await runBenchmark({
-          initialViewport,
-          extent: data.extent,
-          durationMs: BENCHMARK_DURATION_MS,
-          onViewportChange: setViewport,
-        })
-        setBenchmarkResults({ ...results })
+        for (const phase of BENCHMARK_PHASES) {
+          applyViewport(fullViewport)
+          await waitFrames(WARMUP_FRAMES)
+
+          const result = await runBenchmark({
+            phase,
+            extent: data.extent,
+            durationMs: BENCHMARK_DURATION_MS,
+            onViewportChange: applyViewport,
+          })
+          results[renderer] = { ...results[renderer], [phase]: result }
+          setBenchmarkResults({ ...results })
+        }
       }
+      console.table(
+        RENDERERS.flatMap((renderer) =>
+          BENCHMARK_PHASES.map((phase) => ({
+            renderer,
+            phase,
+            ...results[renderer]?.[phase],
+          })),
+        ),
+      )
     } finally {
       setViewport(initialViewport)
       setBenchmarkRenderer(null)
@@ -173,7 +213,14 @@ function App() {
         ))}
       </section>
 
-      <section className="benchmark-panel" aria-live="polite">
+      <section
+        className={`benchmark-panel${
+          Object.keys(benchmarkResults).length > 0 || isBenchmarking
+            ? ' benchmark-panel-results'
+            : ''
+        }`}
+        aria-live="polite"
+      >
         <div className="benchmark-copy">
           <div className="eyebrow">FRAME PERFORMANCE</div>
           <h2>
@@ -185,30 +232,70 @@ function App() {
           </h2>
           <p>
             {Object.keys(benchmarkResults).length > 0 || isBenchmarking
-              ? 'Each renderer runs an identical scripted zoom and pan on its own.'
+              ? 'Each renderer runs alone at 1000 px, from the full data extent: first with all 100,000 points visible, then a scripted zoom and pan.'
               : 'Run a scripted zoom-and-pan test to compare frame pacing for each renderer.'}
           </p>
         </div>
         {Object.keys(benchmarkResults).length > 0 || isBenchmarking ? (
-          <div className="benchmark-metrics">
-            {RENDERERS.map((renderer) => {
-              const result = benchmarkResults[renderer]
-              return (
-                <div className="benchmark-result" key={renderer}>
-                  <span>{RENDERER_INFO[renderer].title}</span>
-                  <strong>
-                    {result ? `${result.fps.toFixed(1)} FPS` : '—'}
-                  </strong>
-                  <small>
-                    {result
-                      ? `mean ${result.meanFrameTimeMs.toFixed(1)} ms · p95 ${result.p95FrameTimeMs.toFixed(1)} ms`
-                      : benchmarkRenderer === renderer
-                        ? 'Measuring…'
-                        : 'Pending'}
-                  </small>
-                </div>
-              )
-            })}
+          <div className="benchmark-table-wrap">
+            <table className="benchmark-table">
+              <thead>
+                <tr>
+                  <th scope="col">Renderer</th>
+                  <th scope="col">Phase</th>
+                  <th scope="col" className="num">FPS</th>
+                  <th scope="col" className="num">p95 ms</th>
+                  <th scope="col" className="num">Max ms</th>
+                  <th scope="col" className="num" title="Frames over the 60 Hz budget (16.7 ms)">
+                    Over budget
+                  </th>
+                  <th scope="col" className="num" title="Main-thread tasks over 50 ms">
+                    Long tasks
+                  </th>
+                  <th scope="col" className="num" title="Used JS heap, Chromium only">
+                    Heap MB
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {RENDERERS.flatMap((renderer) =>
+                  BENCHMARK_PHASES.map((phase, phaseIndex) => {
+                    const result = benchmarkResults[renderer]?.[phase]
+                    return (
+                      <tr
+                        key={`${renderer}-${phase}`}
+                        className={phaseIndex === 0 ? 'group-start' : undefined}
+                      >
+                        {phaseIndex === 0 && (
+                          <th scope="row" rowSpan={BENCHMARK_PHASES.length}>
+                            {RENDERER_INFO[renderer].title}
+                          </th>
+                        )}
+                        <td>{PHASE_LABEL[phase]}</td>
+                        {result ? (
+                          <>
+                            <td className="num">{result.fps.toFixed(1)}</td>
+                            <td className="num">{result.p95FrameTimeMs.toFixed(1)}</td>
+                            <td className="num">{result.maxFrameTimeMs.toFixed(1)}</td>
+                            <td className="num">
+                              {result.framesOverBudget} / {result.frameCount}
+                            </td>
+                            <td className="num">{result.longTasks}</td>
+                            <td className="num">
+                              {result.heapMB === null ? '—' : result.heapMB.toFixed(1)}
+                            </td>
+                          </>
+                        ) : (
+                          <td className="status" colSpan={6}>
+                            {benchmarkRenderer === renderer ? 'Measuring…' : 'Pending'}
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  }),
+                )}
+              </tbody>
+            </table>
           </div>
         ) : (
           <div className="benchmark-placeholder">

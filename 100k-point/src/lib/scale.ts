@@ -41,6 +41,7 @@ export function upperBound(count: number, target: number): number {
   return low
 }
 
+/** Exact index range of the points inside the viewport (used for the readout). */
 export function getVisibleRange(
   pointCount: number,
   viewport: Viewport,
@@ -51,6 +52,21 @@ export function getVisibleRange(
   }
 }
 
+/**
+ * Range to draw: the visible points plus one neighbour on each side, so the
+ * line reaches the plot edges when zoomed in. The plot area is clipped.
+ */
+export function getDrawRange(
+  pointCount: number,
+  viewport: Viewport,
+): { start: number; end: number } {
+  const { start, end } = getVisibleRange(pointCount, viewport)
+  return {
+    start: Math.max(0, start - 1),
+    end: Math.min(pointCount, end + 1),
+  }
+}
+
 export function scaleX(value: number, viewport: Viewport): number {
   return (
     PLOT_LEFT +
@@ -58,25 +74,48 @@ export function scaleX(value: number, viewport: Viewport): number {
   )
 }
 
-export function scaleY(value: number, extent: DataExtent): number {
+/** Y-domain with 6% padding above and below the data. */
+export function getYDomain(extent: DataExtent): { min: number; max: number } {
   const range = extent.yMax - extent.yMin || 1
   const padding = range * 0.06
-  const min = extent.yMin - padding
-  const max = extent.yMax + padding
+  return { min: extent.yMin - padding, max: extent.yMax + padding }
+}
+
+export function scaleY(value: number, extent: DataExtent): number {
+  const { min, max } = getYDomain(extent)
 
   return PLOT_BOTTOM - ((value - min) / (max - min)) * PLOT_HEIGHT
 }
 
-export function getYTicks(extent: DataExtent, count = 5): number[] {
-  const range = extent.yMax - extent.yMin || 1
-  const padding = range * 0.06
-  const min = extent.yMin - padding
-  const max = extent.yMax + padding
+export interface YTick {
+  value: number
+  label: string
+}
 
-  return Array.from({ length: count }, (_, index) => {
-    const ratio = index / (count - 1)
-    return max - ratio * (max - min)
-  })
+/**
+ * Round tick values (1, 2 or 5 x 10^n) inside the y-domain, labelled with
+ * exactly the precision the step needs, so every label matches its gridline.
+ */
+export function getYTicks(extent: DataExtent, targetCount = 5): YTick[] {
+  const { min, max } = getYDomain(extent)
+  const rawStep = (max - min) / Math.max(1, targetCount - 1)
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep))
+  const residual = rawStep / magnitude
+  const multiplier =
+    residual < 1.5 ? 1 : residual < 3 ? 2 : residual < 7 ? 5 : 10
+  const step = multiplier * magnitude
+  const decimals = Math.max(0, -Math.floor(Math.log10(step)))
+  const first = Math.ceil(min / step)
+  const last = Math.floor(max / step)
+  const ticks: YTick[] = []
+
+  // Top to bottom. value = i * step avoids accumulating floating-point error.
+  for (let i = last; i >= first; i -= 1) {
+    const value = i * step
+    ticks.push({ value, label: `$${value.toFixed(decimals)}` })
+  }
+
+  return ticks
 }
 
 export function clampViewport(

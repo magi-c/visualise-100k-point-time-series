@@ -38,7 +38,13 @@ export function generateSeries(count = 100_000): SeriesData {
       Math.sin(index * 0.0031) * 4.5 +
       Math.cos(index * 0.00009) * 8
 
-    values[index] = 100 + trend + cycles + noise
+    // Rare single-sample spikes (~0.04% of points). Min/max downsampling must
+    // still show every one of them; naive decimation would drop most.
+    seed = (seed * 16_807) % 2_147_483_647
+    const spikeRoll = seed / 2_147_483_647
+    const spike = spikeRoll < 0.0004 ? (spikeRoll < 0.0002 ? 9 : -9) : 0
+
+    values[index] = 100 + trend + cycles + noise + spike
   }
 
   return { values, extent: getExtent(values) }

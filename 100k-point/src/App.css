@@ -233,8 +233,11 @@ button {
   gap: 14px;
 }
 
+/* Fixed 1000 px plot (+2 px card border) while measuring, so SVG and canvas
+   paint the same number of pixels and canvas is drawn 1:1, not stretched. */
 .chart-grid-benchmark {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: min(1002px, 100%);
+  justify-content: center;
 }
 
 .chart-card {
@@ -397,6 +400,66 @@ button {
   display: flex;
   gap: clamp(19px, 3vw, 46px);
   padding-left: 20px;
+}
+
+/* With results: description on top, table across the full panel width. */
+.benchmark-panel-results {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.benchmark-panel-results .benchmark-copy p {
+  max-width: none;
+}
+
+.benchmark-table-wrap {
+  min-width: 0;
+  overflow-x: auto; /* scroll sideways on narrow screens, never overflow */
+}
+
+.benchmark-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.benchmark-table th,
+.benchmark-table td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.benchmark-table thead th {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.benchmark-table tbody th {
+  color: #e6edf5;
+  font-weight: 500;
+  vertical-align: top;
+}
+
+.benchmark-table tr.group-start > * {
+  border-top: 1px solid var(--border);
+}
+
+/* Right-aligned tabular figures with fixed decimals line up on the point. */
+.benchmark-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: #dfe9e8;
+}
+
+.benchmark-table .status {
+  color: var(--muted);
 }
 
 .benchmark-result {

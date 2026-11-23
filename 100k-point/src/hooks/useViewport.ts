@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { PointerEvent } from 'react'
 import {
   CHART_WIDTH,
+  PLOT_LEFT,
   PLOT_WIDTH,
   clampViewport,
   panViewport,
@@ -34,7 +35,7 @@ export function useViewport(extent: DataExtent) {
         ((event.clientX - bounds.left) / bounds.width) * CHART_WIDTH
       const anchorRatio = Math.min(
         1,
-        Math.max(0, (chartX - 64) / PLOT_WIDTH),
+        Math.max(0, (chartX - PLOT_LEFT) / PLOT_WIDTH),
       )
       const factor = Math.exp(event.deltaY * 0.001)
 

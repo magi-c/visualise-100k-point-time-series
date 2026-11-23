@@ -4,19 +4,21 @@ import {
   CHART_WIDTH,
   PLOT_BOTTOM,
   PLOT_LEFT,
+  PLOT_HEIGHT,
   PLOT_RIGHT,
-  getVisibleRange,
+  PLOT_TOP,
+  PLOT_WIDTH,
+  getDrawRange,
   getYTicks,
   scaleX,
   scaleY,
 } from '../lib/scale'
 
-function formatPrice(value: number): string {
-  return `$${value.toFixed(0)}`
-}
+// Only one SvgChart is mounted at a time, so a fixed id is safe.
+const PLOT_CLIP_ID = 'svg-plot-clip'
 
 export function SvgChart({ data, viewport }: ChartProps) {
-  const { start, end } = getVisibleRange(data.values.length, viewport)
+  const { start, end } = getDrawRange(data.values.length, viewport)
   const path = new Array<string>(end - start)
 
   for (let index = start; index < end; index += 1) {
@@ -35,10 +37,15 @@ export function SvgChart({ data, viewport }: ChartProps) {
       role="img"
       aria-label="100,000-point time series rendered as an SVG path"
     >
+      <defs>
+        <clipPath id={PLOT_CLIP_ID}>
+          <rect x={PLOT_LEFT} y={PLOT_TOP} width={PLOT_WIDTH} height={PLOT_HEIGHT} />
+        </clipPath>
+      </defs>
       {yTicks.map((tick) => {
-        const y = scaleY(tick, data.extent)
+        const y = scaleY(tick.value, data.extent)
         return (
-          <g key={tick}>
+          <g key={tick.value}>
             <line
               x1={PLOT_LEFT}
               x2={PLOT_RIGHT}
@@ -47,7 +54,7 @@ export function SvgChart({ data, viewport }: ChartProps) {
               className="chart-gridline"
             />
             <text x={PLOT_LEFT - 10} y={y + 4} className="chart-label" textAnchor="end">
-              {formatPrice(tick)}
+              {tick.label}
             </text>
           </g>
         )
@@ -59,7 +66,11 @@ export function SvgChart({ data, viewport }: ChartProps) {
         y2={PLOT_BOTTOM}
         className="chart-axis"
       />
-      <path d={path.join('')} className="chart-line chart-line-svg" />
+      <path
+        d={path.join('')}
+        className="chart-line chart-line-svg"
+        clipPath={`url(#${PLOT_CLIP_ID})`}
+      />
       <text x={PLOT_LEFT} y={CHART_HEIGHT - 12} className="chart-label">
         {Math.round(viewport.xMin).toLocaleString()}
       </text>
