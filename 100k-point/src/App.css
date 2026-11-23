@@ -321,6 +321,12 @@ button {
   cursor: grabbing;
 }
 
+/* Input is ignored while a benchmark runs. */
+.chart-surface-locked,
+.chart-surface-locked:active {
+  cursor: progress;
+}
+
 .chart-svg,
 .chart-canvas {
   display: block;

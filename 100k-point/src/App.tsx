@@ -1,4 +1,12 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import { runBenchmark, waitFrames } from './bench/runBenchmark'
@@ -60,6 +68,21 @@ const RENDERER_INFO: Record<
   },
 }
 
+/*
+ * Render cost during a benchmark frame
+ * -----------------------------------
+ * Every frame of a run calls flushSync(setViewport), which re-renders App.
+ * Only the chart under test should do real work in that render, otherwise
+ * the same overhead is added to every renderer and hides the differences.
+ * So everything else is a memo'd component whose props stay referentially
+ * stable during a run:
+ *   - AppHeader, AppFooter: static
+ *   - ControlPanel: shows a frozen viewport while measuring
+ *   - BenchmarkPanel: changes only when a phase finishes
+ *   - ChartCardHeader / ChartCardFooter: the card chrome around the chart
+ * Callbacks passed to them are stable (useCallback + a ref for the latest
+ * values). Check with React DevTools > Profiler > "Highlight updates".
+ */
 function App() {
   const [data] = useState(generateSeries)
   const {
@@ -78,61 +101,84 @@ function App() {
   const [isBenchmarking, setIsBenchmarking] = useState(false)
   // Renderers included in the current run (all three, or a single chart).
   const [benchmarkQueue, setBenchmarkQueue] = useState<readonly Renderer[]>([])
-  const visibleRange = getVisibleRange(data.values.length, viewport)
-  const visiblePoints = visibleRange.end - visibleRange.start
+  // The readout shows this (the view restored afterwards) while measuring,
+  // so it doesn't re-render on every benchmark frame.
+  const [frozenViewport, setFrozenViewport] = useState<Viewport | null>(null)
 
-  const handleBenchmark = async (renderers: readonly Renderer[]) => {
-    // Restored afterwards; the benchmark itself always starts from full extent.
-    const initialViewport = { ...viewport }
-    const fullViewport: Viewport = {
-      xMin: data.extent.xMin,
-      xMax: data.extent.xMax,
-    }
-    // flushSync: render inside the current frame. Without it React 19 may
-    // batch the update and render after paint, so the frame time is wrong.
-    const applyViewport = (next: Viewport) =>
-      flushSync(() => setViewport(next))
-    // Keep earlier results for charts that aren't re-measured in this run.
-    const results: BenchmarkResults = { ...benchmarkResults }
-    for (const renderer of renderers) delete results[renderer]
-    setIsBenchmarking(true)
-    setBenchmarkQueue(renderers)
-    setBenchmarkResults({ ...results })
+  // Latest values read by the benchmark, so handleBenchmark can stay stable.
+  const latest = useRef({ viewport, benchmarkResults })
+  useLayoutEffect(() => {
+    latest.current = { viewport, benchmarkResults }
+  })
 
-    try {
-      for (const renderer of renderers) {
-        flushSync(() => setBenchmarkRenderer(renderer))
-
-        for (const phase of BENCHMARK_PHASES) {
-          applyViewport(fullViewport)
-          await waitFrames(WARMUP_FRAMES)
-
-          const result = await runBenchmark({
-            phase,
-            extent: data.extent,
-            durationMs: BENCHMARK_DURATION_MS,
-            onViewportChange: applyViewport,
-          })
-          results[renderer] = { ...results[renderer], [phase]: result }
-          setBenchmarkResults({ ...results })
-        }
+  const handleBenchmark = useCallback(
+    async (renderers: readonly Renderer[]) => {
+      // Restored afterwards; the benchmark itself always starts from full extent.
+      const initialViewport = { ...latest.current.viewport }
+      const fullViewport: Viewport = {
+        xMin: data.extent.xMin,
+        xMax: data.extent.xMax,
       }
-      console.table(
-        renderers.flatMap((renderer) =>
-          BENCHMARK_PHASES.map((phase) => ({
-            renderer,
-            phase,
-            ...results[renderer]?.[phase],
-          })),
-        ),
-      )
-    } finally {
-      setViewport(initialViewport)
-      setBenchmarkRenderer(null)
-      setBenchmarkQueue([])
-      setIsBenchmarking(false)
-    }
-  }
+      // flushSync: render inside the current frame. Without it React 19 may
+      // batch the update and render after paint, so the frame time is wrong.
+      const applyViewport = (next: Viewport) =>
+        flushSync(() => setViewport(next))
+      // Keep earlier results for charts that aren't re-measured in this run.
+      const results: BenchmarkResults = { ...latest.current.benchmarkResults }
+      for (const renderer of renderers) delete results[renderer]
+      setFrozenViewport(initialViewport)
+      setIsBenchmarking(true)
+      setBenchmarkQueue(renderers)
+      setBenchmarkResults({ ...results })
+
+      try {
+        for (const renderer of renderers) {
+          flushSync(() => setBenchmarkRenderer(renderer))
+
+          for (const phase of BENCHMARK_PHASES) {
+            applyViewport(fullViewport)
+            await waitFrames(WARMUP_FRAMES)
+
+            const result = await runBenchmark({
+              phase,
+              extent: data.extent,
+              durationMs: BENCHMARK_DURATION_MS,
+              onViewportChange: applyViewport,
+            })
+            results[renderer] = { ...results[renderer], [phase]: result }
+            setBenchmarkResults({ ...results })
+          }
+        }
+        console.table(
+          renderers.flatMap((renderer) =>
+            BENCHMARK_PHASES.map((phase) => ({
+              renderer,
+              phase,
+              ...results[renderer]?.[phase],
+            })),
+          ),
+        )
+      } finally {
+        setViewport(initialViewport)
+        setFrozenViewport(null)
+        setBenchmarkRenderer(null)
+        setBenchmarkQueue([])
+        setIsBenchmarking(false)
+      }
+    },
+    [data.extent, setViewport],
+  )
+
+  const handleRunAll = useCallback(() => {
+    void handleBenchmark(RENDERERS)
+  }, [handleBenchmark])
+
+  const handleMeasure = useCallback(
+    (renderer: Renderer) => {
+      void handleBenchmark([renderer])
+    },
+    [handleBenchmark],
+  )
 
   const visibleRenderers: readonly Renderer[] = benchmarkRenderer
     ? [benchmarkRenderer]
@@ -140,68 +186,16 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="app-header">
-        <div>
-          <div className="eyebrow">
-            <span className="status-dot" />
-            RENDERING LAB
-          </div>
-          <h1>One signal. Three ways to see it.</h1>
-          <p className="intro">
-            Explore a 100,000-point market series and compare how SVG and canvas
-            handle the same data.
-          </p>
-        </div>
-        <div className="header-badge">
-          <span className="badge-value">{data.values.length.toLocaleString()}</span>
-          <span className="badge-label">data points</span>
-        </div>
-      </header>
+      <AppHeader pointCount={data.values.length} />
 
-      <section className="control-panel" aria-label="Chart controls">
-        <div className="range-readout">
-          <span className="control-label">VISIBLE WINDOW</span>
-          <strong>
-            {Math.round(viewport.xMin).toLocaleString()}
-            <span className="range-divider">—</span>
-            {Math.round(viewport.xMax).toLocaleString()}
-          </strong>
-          <span className="muted">
-            {visiblePoints.toLocaleString()} points in view
-          </span>
-        </div>
-        <p className="interaction-hint">
-          Scroll to zoom <span>·</span> drag to pan
-        </p>
-        <div className="control-actions">
-          <button
-            className="button button-quiet"
-            type="button"
-            onClick={resetViewport}
-            disabled={isBenchmarking}
-          >
-            Reset view
-          </button>
-          <button
-            className="button button-primary"
-            type="button"
-            onClick={() => void handleBenchmark(RENDERERS)}
-            disabled={isBenchmarking}
-          >
-            {isBenchmarking ? (
-              <>
-                <span className="spinner" />
-                Measuring {RENDERER_INFO[benchmarkRenderer ?? 'svg'].title}…
-              </>
-            ) : (
-              <>
-                <span aria-hidden="true">▶</span>
-                Run benchmark
-              </>
-            )}
-          </button>
-        </div>
-      </section>
+      <ControlPanel
+        viewport={frozenViewport ?? viewport}
+        pointCount={data.values.length}
+        isBenchmarking={isBenchmarking}
+        benchmarkRenderer={benchmarkRenderer}
+        onReset={resetViewport}
+        onRunAll={handleRunAll}
+      />
 
       <section
         className={`chart-grid${benchmarkRenderer ? ' chart-grid-benchmark' : ''}`}
@@ -215,123 +209,241 @@ function App() {
             viewport={viewport}
             handlers={handlers}
             onWheel={onWheel}
-            onMeasure={() => void handleBenchmark([renderer])}
-            measureDisabled={isBenchmarking}
+            onMeasure={handleMeasure}
+            isBenchmarking={isBenchmarking}
           />
         ))}
       </section>
 
-      <section
-        className={`benchmark-panel${
-          Object.keys(benchmarkResults).length > 0 || isBenchmarking
-            ? ' benchmark-panel-results'
-            : ''
-        }`}
-        aria-live="polite"
-      >
-        <div className="benchmark-copy">
-          <div className="eyebrow">FRAME PERFORMANCE</div>
-          <h2>
-            {isBenchmarking
-              ? `Measuring ${RENDERER_INFO[benchmarkRenderer ?? 'svg'].title}`
-              : Object.keys(benchmarkResults).length > 0
-                ? 'Benchmark complete'
-                : 'Put the renderers to work'}
-          </h2>
-          <p>
-            {Object.keys(benchmarkResults).length > 0 || isBenchmarking
-              ? 'Each renderer runs alone at 1000 px, from the full data extent: first with all 100,000 points visible, then a scripted zoom and pan.'
-              : 'Run a scripted zoom-and-pan test to compare frame pacing for each renderer.'}
-          </p>
-        </div>
-        {Object.keys(benchmarkResults).length > 0 || isBenchmarking ? (
-          <div className="benchmark-table-wrap">
-            <table className="benchmark-table">
-              <thead>
-                <tr>
-                  <th scope="col">Renderer</th>
-                  <th scope="col">
-                    <HeaderTip label="Phase" tip={COLUMN_TIPS.phase} align="left" />
-                  </th>
-                  <th scope="col" className="num">
-                    <HeaderTip label="FPS" tip={COLUMN_TIPS.fps} />
-                  </th>
-                  <th scope="col" className="num">
-                    <HeaderTip label="p95 ms" tip={COLUMN_TIPS.p95} />
-                  </th>
-                  <th scope="col" className="num">
-                    <HeaderTip label="Max ms" tip={COLUMN_TIPS.max} />
-                  </th>
-                  <th scope="col" className="num">
-                    <HeaderTip label="Over budget" tip={COLUMN_TIPS.overBudget} />
-                  </th>
-                  <th scope="col" className="num">
-                    <HeaderTip label="Long tasks" tip={COLUMN_TIPS.longTasks} />
-                  </th>
-                  <th scope="col" className="num">
-                    <HeaderTip label="Heap MB" tip={COLUMN_TIPS.heap} />
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {RENDERERS.flatMap((renderer) =>
-                  BENCHMARK_PHASES.map((phase, phaseIndex) => {
-                    const result = benchmarkResults[renderer]?.[phase]
-                    return (
-                      <tr
-                        key={`${renderer}-${phase}`}
-                        className={phaseIndex === 0 ? 'group-start' : undefined}
-                      >
-                        {phaseIndex === 0 && (
-                          <th scope="row" rowSpan={BENCHMARK_PHASES.length}>
-                            {RENDERER_INFO[renderer].title}
-                          </th>
-                        )}
-                        <td>{PHASE_LABEL[phase]}</td>
-                        {result ? (
-                          <>
-                            <td className="num">{result.fps.toFixed(1)}</td>
-                            <td className="num">{result.p95FrameTimeMs.toFixed(1)}</td>
-                            <td className="num">{result.maxFrameTimeMs.toFixed(1)}</td>
-                            <td className="num">
-                              {result.framesOverBudget} / {result.frameCount}
-                            </td>
-                            <td className="num">{result.longTasks}</td>
-                            <td className="num">
-                              {result.heapMB === null ? '—' : result.heapMB.toFixed(1)}
-                            </td>
-                          </>
-                        ) : (
-                          <td className="status" colSpan={6}>
-                            {benchmarkRenderer === renderer
-                              ? 'Measuring…'
-                              : benchmarkQueue.includes(renderer)
-                                ? 'Pending'
-                                : 'Not run'}
-                          </td>
-                        )}
-                      </tr>
-                    )
-                  }),
-                )}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="benchmark-placeholder">
-            <span className="placeholder-mark">↗</span>
-            <span>Results appear here</span>
-          </div>
-        )}
-      </section>
+      <BenchmarkPanel
+        results={benchmarkResults}
+        isBenchmarking={isBenchmarking}
+        benchmarkRenderer={benchmarkRenderer}
+        benchmarkQueue={benchmarkQueue}
+      />
 
-      <footer className="app-footer">
-        <span>GENERATED SERIES · SEEDED FOR REPEATABLE COMPARISONS</span>
-        <span>WHEEL TO ZOOM&nbsp;&nbsp; / &nbsp;&nbsp;DRAG TO PAN</span>
-      </footer>
+      <AppFooter />
     </main>
   )
 }
+
+const AppHeader = memo(function AppHeader({
+  pointCount,
+}: {
+  pointCount: number
+}) {
+  return (
+    <header className="app-header">
+      <div>
+        <div className="eyebrow">
+          <span className="status-dot" />
+          RENDERING LAB
+        </div>
+        <h1>One signal. Three ways to see it.</h1>
+        <p className="intro">
+          Explore a 100,000-point market series and compare how SVG and canvas
+          handle the same data.
+        </p>
+      </div>
+      <div className="header-badge">
+        <span className="badge-value">{pointCount.toLocaleString()}</span>
+        <span className="badge-label">data points</span>
+      </div>
+    </header>
+  )
+})
+
+const ControlPanel = memo(function ControlPanel({
+  viewport,
+  pointCount,
+  isBenchmarking,
+  benchmarkRenderer,
+  onReset,
+  onRunAll,
+}: {
+  viewport: Viewport
+  pointCount: number
+  isBenchmarking: boolean
+  benchmarkRenderer: Renderer | null
+  onReset: () => void
+  onRunAll: () => void
+}) {
+  const visibleRange = getVisibleRange(pointCount, viewport)
+  const visiblePoints = visibleRange.end - visibleRange.start
+
+  return (
+    <section className="control-panel" aria-label="Chart controls">
+      <div className="range-readout">
+        <span className="control-label">VISIBLE WINDOW</span>
+        <strong>
+          {Math.round(viewport.xMin).toLocaleString()}
+          <span className="range-divider">—</span>
+          {Math.round(viewport.xMax).toLocaleString()}
+        </strong>
+        <span className="muted">
+          {visiblePoints.toLocaleString()} points in view
+        </span>
+      </div>
+      <p className="interaction-hint">
+        Scroll to zoom <span>·</span> drag to pan
+      </p>
+      <div className="control-actions">
+        <button
+          className="button button-quiet"
+          type="button"
+          onClick={onReset}
+          disabled={isBenchmarking}
+        >
+          Reset view
+        </button>
+        <button
+          className="button button-primary"
+          type="button"
+          onClick={onRunAll}
+          disabled={isBenchmarking}
+        >
+          {isBenchmarking ? (
+            <>
+              <span className="spinner" />
+              Measuring {RENDERER_INFO[benchmarkRenderer ?? 'svg'].title}…
+            </>
+          ) : (
+            <>
+              <span aria-hidden="true">▶</span>
+              Run benchmark
+            </>
+          )}
+        </button>
+      </div>
+    </section>
+  )
+})
+
+const BenchmarkPanel = memo(function BenchmarkPanel({
+  results,
+  isBenchmarking,
+  benchmarkRenderer,
+  benchmarkQueue,
+}: {
+  results: BenchmarkResults
+  isBenchmarking: boolean
+  benchmarkRenderer: Renderer | null
+  benchmarkQueue: readonly Renderer[]
+}) {
+  const hasResults = Object.keys(results).length > 0
+  const showTable = hasResults || isBenchmarking
+
+  return (
+    <section
+      className={`benchmark-panel${showTable ? ' benchmark-panel-results' : ''}`}
+      aria-live="polite"
+    >
+      <div className="benchmark-copy">
+        <div className="eyebrow">FRAME PERFORMANCE</div>
+        <h2>
+          {isBenchmarking
+            ? `Measuring ${RENDERER_INFO[benchmarkRenderer ?? 'svg'].title}`
+            : hasResults
+              ? 'Benchmark complete'
+              : 'Put the renderers to work'}
+        </h2>
+        <p>
+          {showTable
+            ? 'Each renderer runs alone at 1000 px, from the full data extent: first with all 100,000 points visible, then a scripted zoom and pan.'
+            : 'Run a scripted zoom-and-pan test to compare frame pacing for each renderer.'}
+        </p>
+      </div>
+      {showTable ? (
+        <div className="benchmark-table-wrap">
+          <table className="benchmark-table">
+            <thead>
+              <tr>
+                <th scope="col">Renderer</th>
+                <th scope="col">
+                  <HeaderTip label="Phase" tip={COLUMN_TIPS.phase} align="left" />
+                </th>
+                <th scope="col" className="num">
+                  <HeaderTip label="FPS" tip={COLUMN_TIPS.fps} />
+                </th>
+                <th scope="col" className="num">
+                  <HeaderTip label="p95 ms" tip={COLUMN_TIPS.p95} />
+                </th>
+                <th scope="col" className="num">
+                  <HeaderTip label="Max ms" tip={COLUMN_TIPS.max} />
+                </th>
+                <th scope="col" className="num">
+                  <HeaderTip label="Over budget" tip={COLUMN_TIPS.overBudget} />
+                </th>
+                <th scope="col" className="num">
+                  <HeaderTip label="Long tasks" tip={COLUMN_TIPS.longTasks} />
+                </th>
+                <th scope="col" className="num">
+                  <HeaderTip label="Heap MB" tip={COLUMN_TIPS.heap} />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {RENDERERS.flatMap((renderer) =>
+                BENCHMARK_PHASES.map((phase, phaseIndex) => {
+                  const result = results[renderer]?.[phase]
+                  return (
+                    <tr
+                      key={`${renderer}-${phase}`}
+                      className={phaseIndex === 0 ? 'group-start' : undefined}
+                    >
+                      {phaseIndex === 0 && (
+                        <th scope="row" rowSpan={BENCHMARK_PHASES.length}>
+                          {RENDERER_INFO[renderer].title}
+                        </th>
+                      )}
+                      <td>{PHASE_LABEL[phase]}</td>
+                      {result ? (
+                        <>
+                          <td className="num">{result.fps.toFixed(1)}</td>
+                          <td className="num">{result.p95FrameTimeMs.toFixed(1)}</td>
+                          <td className="num">{result.maxFrameTimeMs.toFixed(1)}</td>
+                          <td className="num">
+                            {result.framesOverBudget} / {result.frameCount}
+                          </td>
+                          <td className="num">{result.longTasks}</td>
+                          <td className="num">
+                            {result.heapMB === null ? '—' : result.heapMB.toFixed(1)}
+                          </td>
+                        </>
+                      ) : (
+                        <td className="status" colSpan={6}>
+                          {benchmarkRenderer === renderer
+                            ? 'Measuring…'
+                            : benchmarkQueue.includes(renderer)
+                              ? 'Pending'
+                              : 'Not run'}
+                        </td>
+                      )}
+                    </tr>
+                  )
+                }),
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="benchmark-placeholder">
+          <span className="placeholder-mark">↗</span>
+          <span>Results appear here</span>
+        </div>
+      )}
+    </section>
+  )
+})
+
+const AppFooter = memo(function AppFooter() {
+  return (
+    <footer className="app-footer">
+      <span>GENERATED SERIES · SEEDED FOR REPEATABLE COMPARISONS</span>
+      <span>WHEEL TO ZOOM&nbsp;&nbsp; / &nbsp;&nbsp;DRAG TO PAN</span>
+    </footer>
+  )
+})
 
 const COLUMN_TIPS = {
   phase:
@@ -376,6 +488,7 @@ function HeaderTip({
   )
 }
 
+/** Re-renders every frame (it gets the viewport); keep it thin. */
 function ChartPanel({
   renderer,
   data,
@@ -383,48 +496,30 @@ function ChartPanel({
   handlers,
   onWheel,
   onMeasure,
-  measureDisabled,
+  isBenchmarking,
 }: {
   renderer: Renderer
   data: ChartProps['data']
   viewport: ChartProps['viewport']
   handlers: ViewportHandlers
   onWheel: (event: globalThis.WheelEvent, element: HTMLElement) => void
-  onMeasure: () => void
-  measureDisabled: boolean
+  onMeasure: (renderer: Renderer) => void
+  isBenchmarking: boolean
 }) {
-  const info = RENDERER_INFO[renderer]
-
   return (
     <article
       className={`chart-card${renderer === 'minmax' ? ' chart-card-featured' : ''}`}
     >
-      <div className="chart-card-header">
-        <div className="renderer-title">
-          <span className="renderer-index">{info.index}</span>
-          <div>
-            <h2>{info.title}</h2>
-            <p>{info.subtitle}</p>
-          </div>
-        </div>
-        <div className="chart-card-actions">
-          <span
-            className={`renderer-tag${renderer === 'minmax' ? ' tag-optimized' : ''}`}
-          >
-            {info.tag}
-          </span>
-          <button
-            className="button button-quiet button-small"
-            type="button"
-            onClick={onMeasure}
-            disabled={measureDisabled}
-            aria-label={`Measure ${info.title} only`}
-          >
-            Measure
-          </button>
-        </div>
-      </div>
-      <ChartSurface handlers={handlers} onWheel={onWheel}>
+      <ChartCardHeader
+        renderer={renderer}
+        onMeasure={onMeasure}
+        measureDisabled={isBenchmarking}
+      />
+      <ChartSurface
+        handlers={handlers}
+        onWheel={onWheel}
+        interactive={!isBenchmarking}
+      >
         {renderer === 'svg' ? (
           <SvgChart data={data} viewport={viewport} />
         ) : renderer === 'canvas' ? (
@@ -433,25 +528,78 @@ function ChartPanel({
           <CanvasMinMaxChart data={data} viewport={viewport} />
         )}
       </ChartSurface>
-      <div className="chart-card-footer">
-        <span>{info.footer}</span>
-        <span className="legend">
-          <i className={`legend-dot ${renderer === 'svg' ? 'svg-dot' : 'canvas-dot'}`} />
-          Price
-        </span>
-      </div>
+      <ChartCardFooter renderer={renderer} />
     </article>
   )
 }
+
+const ChartCardHeader = memo(function ChartCardHeader({
+  renderer,
+  onMeasure,
+  measureDisabled,
+}: {
+  renderer: Renderer
+  onMeasure: (renderer: Renderer) => void
+  measureDisabled: boolean
+}) {
+  const info = RENDERER_INFO[renderer]
+
+  return (
+    <div className="chart-card-header">
+      <div className="renderer-title">
+        <span className="renderer-index">{info.index}</span>
+        <div>
+          <h2>{info.title}</h2>
+          <p>{info.subtitle}</p>
+        </div>
+      </div>
+      <div className="chart-card-actions">
+        <span
+          className={`renderer-tag${renderer === 'minmax' ? ' tag-optimized' : ''}`}
+        >
+          {info.tag}
+        </span>
+        <button
+          className="button button-quiet button-small"
+          type="button"
+          onClick={() => onMeasure(renderer)}
+          disabled={measureDisabled}
+          aria-label={`Measure ${info.title} only`}
+        >
+          Measure
+        </button>
+      </div>
+    </div>
+  )
+})
+
+const ChartCardFooter = memo(function ChartCardFooter({
+  renderer,
+}: {
+  renderer: Renderer
+}) {
+  return (
+    <div className="chart-card-footer">
+      <span>{RENDERER_INFO[renderer].footer}</span>
+      <span className="legend">
+        <i className={`legend-dot ${renderer === 'svg' ? 'svg-dot' : 'canvas-dot'}`} />
+        Price
+      </span>
+    </div>
+  )
+})
 
 function ChartSurface({
   children,
   handlers,
   onWheel,
+  interactive,
 }: {
   children: ReactNode
   handlers: ViewportHandlers
   onWheel: (event: globalThis.WheelEvent, element: HTMLElement) => void
+  /** false while a benchmark runs: user input would add extra renders. */
+  interactive: boolean
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null)
 
@@ -459,13 +607,23 @@ function ChartSurface({
     const surface = surfaceRef.current
     if (!surface) return
 
-    const handleWheel = (event: globalThis.WheelEvent) => onWheel(event, surface)
+    const handleWheel = (event: globalThis.WheelEvent) => {
+      if (!interactive) {
+        event.preventDefault() // don't scroll the page away mid-run either
+        return
+      }
+      onWheel(event, surface)
+    }
     surface.addEventListener('wheel', handleWheel, { passive: false })
     return () => surface.removeEventListener('wheel', handleWheel)
-  }, [onWheel])
+  }, [onWheel, interactive])
 
   return (
-    <div ref={surfaceRef} className="chart-surface" {...handlers}>
+    <div
+      ref={surfaceRef}
+      className={`chart-surface${interactive ? '' : ' chart-surface-locked'}`}
+      {...(interactive ? handlers : {})}
+    >
       {children}
     </div>
   )

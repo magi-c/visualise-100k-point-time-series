@@ -63,6 +63,12 @@ export function useViewport(extent: DataExtent) {
     (event: PointerEvent<HTMLElement>) => {
       const activeDrag = drag.current
       if (!activeDrag || activeDrag.pointerId !== event.pointerId) return
+      // Button already released (e.g. pointerup was missed while input was
+      // locked during a benchmark): end the drag instead of panning.
+      if (event.buttons === 0) {
+        drag.current = null
+        return
+      }
 
       const bounds = event.currentTarget.getBoundingClientRect()
       const delta =
@@ -83,9 +89,15 @@ export function useViewport(extent: DataExtent) {
     }
   }, [])
 
+  // Stable identity, so callbacks that use it can stay stable too.
+  const setClampedViewport = useCallback(
+    (next: Viewport) => setViewport(clampViewport(next, extent)),
+    [extent],
+  )
+
   return {
     viewport,
-    setViewport: (next: Viewport) => setViewport(clampViewport(next, extent)),
+    setViewport: setClampedViewport,
     resetViewport,
     onWheel,
     handlers: {
