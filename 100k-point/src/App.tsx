@@ -76,10 +76,12 @@ function App() {
     null,
   )
   const [isBenchmarking, setIsBenchmarking] = useState(false)
+  // Renderers included in the current run (all three, or a single chart).
+  const [benchmarkQueue, setBenchmarkQueue] = useState<readonly Renderer[]>([])
   const visibleRange = getVisibleRange(data.values.length, viewport)
   const visiblePoints = visibleRange.end - visibleRange.start
 
-  const handleBenchmark = async () => {
+  const handleBenchmark = async (renderers: readonly Renderer[]) => {
     // Restored afterwards; the benchmark itself always starts from full extent.
     const initialViewport = { ...viewport }
     const fullViewport: Viewport = {
@@ -90,12 +92,15 @@ function App() {
     // batch the update and render after paint, so the frame time is wrong.
     const applyViewport = (next: Viewport) =>
       flushSync(() => setViewport(next))
-    const results: BenchmarkResults = {}
+    // Keep earlier results for charts that aren't re-measured in this run.
+    const results: BenchmarkResults = { ...benchmarkResults }
+    for (const renderer of renderers) delete results[renderer]
     setIsBenchmarking(true)
-    setBenchmarkResults({})
+    setBenchmarkQueue(renderers)
+    setBenchmarkResults({ ...results })
 
     try {
-      for (const renderer of RENDERERS) {
+      for (const renderer of renderers) {
         flushSync(() => setBenchmarkRenderer(renderer))
 
         for (const phase of BENCHMARK_PHASES) {
@@ -113,7 +118,7 @@ function App() {
         }
       }
       console.table(
-        RENDERERS.flatMap((renderer) =>
+        renderers.flatMap((renderer) =>
           BENCHMARK_PHASES.map((phase) => ({
             renderer,
             phase,
@@ -124,6 +129,7 @@ function App() {
     } finally {
       setViewport(initialViewport)
       setBenchmarkRenderer(null)
+      setBenchmarkQueue([])
       setIsBenchmarking(false)
     }
   }
@@ -179,7 +185,7 @@ function App() {
           <button
             className="button button-primary"
             type="button"
-            onClick={() => void handleBenchmark()}
+            onClick={() => void handleBenchmark(RENDERERS)}
             disabled={isBenchmarking}
           >
             {isBenchmarking ? (
@@ -209,6 +215,8 @@ function App() {
             viewport={viewport}
             handlers={handlers}
             onWheel={onWheel}
+            onMeasure={() => void handleBenchmark([renderer])}
+            measureDisabled={isBenchmarking}
           />
         ))}
       </section>
@@ -287,7 +295,11 @@ function App() {
                           </>
                         ) : (
                           <td className="status" colSpan={6}>
-                            {benchmarkRenderer === renderer ? 'Measuring…' : 'Pending'}
+                            {benchmarkRenderer === renderer
+                              ? 'Measuring…'
+                              : benchmarkQueue.includes(renderer)
+                                ? 'Pending'
+                                : 'Not run'}
                           </td>
                         )}
                       </tr>
@@ -319,12 +331,16 @@ function ChartPanel({
   viewport,
   handlers,
   onWheel,
+  onMeasure,
+  measureDisabled,
 }: {
   renderer: Renderer
   data: ChartProps['data']
   viewport: ChartProps['viewport']
   handlers: ViewportHandlers
   onWheel: (event: globalThis.WheelEvent, element: HTMLElement) => void
+  onMeasure: () => void
+  measureDisabled: boolean
 }) {
   const info = RENDERER_INFO[renderer]
 
@@ -340,11 +356,22 @@ function ChartPanel({
             <p>{info.subtitle}</p>
           </div>
         </div>
-        <span
-          className={`renderer-tag${renderer === 'minmax' ? ' tag-optimized' : ''}`}
-        >
-          {info.tag}
-        </span>
+        <div className="chart-card-actions">
+          <span
+            className={`renderer-tag${renderer === 'minmax' ? ' tag-optimized' : ''}`}
+          >
+            {info.tag}
+          </span>
+          <button
+            className="button button-quiet button-small"
+            type="button"
+            onClick={onMeasure}
+            disabled={measureDisabled}
+            aria-label={`Measure ${info.title} only`}
+          >
+            Measure
+          </button>
+        </div>
       </div>
       <ChartSurface handlers={handlers} onWheel={onWheel}>
         {renderer === 'svg' ? (

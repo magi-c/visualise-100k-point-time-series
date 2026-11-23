@@ -297,6 +297,18 @@ button {
   color: var(--mint);
 }
 
+.chart-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.button-small {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 10px;
+}
+
 .chart-surface {
   width: 100%;
   overflow: hidden;
