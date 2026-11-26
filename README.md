@@ -1,5 +1,3 @@
-# visualise-100k-point-time-series
-
 React 19 + TypeScript app that draws the same 100,000-point price series in three ways — **SVG**, **full-resolution canvas** and **min/max-decimated canvas** — with shared pan and zoom, and measures each renderer with a scripted benchmark. No charting library: scales, ticks, decimation and the benchmark are hand-written.
 
 <img width="1367" height="918" alt="Three renderers side by side with the benchmark results table" src="https://github.com/user-attachments/assets/c3a9e226-4873-4d90-819e-fcbe2b3b9a70" />
@@ -11,14 +9,14 @@ Each renderer runs alone at 1000 px wide, after 10 warm-up frames, for 4 s per p
 - **All 100k visible**: the view wobbles between 98% and 100% of the data, so every point is drawn every frame (worst case).
 - **Zoom & pan**: scripted zoom between 16% and 92% of the data, with panning.
 
-| Renderer | Phase | FPS | p95 frame (ms) | Max frame (ms) | Frames over budget |
-|---|---|--:|--:|--:|--:|
-| SVG | All 100k visible | TODO | TODO | TODO | TODO / TODO |
-| SVG | Zoom & pan | TODO | TODO | TODO | TODO / TODO |
-| Canvas (full) | All 100k visible | TODO | TODO | TODO | TODO / TODO |
-| Canvas (full) | Zoom & pan | TODO | TODO | TODO | TODO / TODO |
-| Canvas min/max | All 100k visible | TODO | TODO | TODO | TODO / TODO |
-| Canvas min/max | Zoom & pan | TODO | TODO | TODO | TODO / TODO |
+| Renderer | Phase | FPS | p95 frame (ms) | Max frame (ms) | Frames over budget | Long tasks | Heap (MB) |
+|---|---|--:|--:|--:|--:|--:|--:|
+| SVG | All 100k visible | 5.4 | 220.0 | 220.1 | 22 / 22 | 22 | 43.2 |
+| SVG | Zoom & pan | 10.8 | 200.0 | 240.2 | 43 / 43 | 14 | 28.4 |
+| Canvas (full) | All 100k visible | 10.1 | 140.3 | 159.9 | 41 / 41 | 0 | 32.0 |
+| Canvas (full) | Zoom & pan | 22.6 | 100.0 | 120.1 | 91 / 91 | 0 | 35.6 |
+| Canvas min/max | All 100k visible | 49.0 | 20.1 | 60.0 | 195 / 195 | 0 | 13.1 |
+| Canvas min/max | Zoom & pan | 50.0 | 20.2 | 20.3 | 199 / 199 | 0 | 20.5 |
 
 Budget: 16.7 ms per frame (60 Hz) + 1 ms tolerance for vsync jitter.
 Measured on: TODO machine (CPU, RAM) · TODO browser and version · TODO Hz display · devicePixelRatio TODO.
@@ -56,3 +54,4 @@ npm run dev     # wheel to zoom, drag to pan
 npm run build
 npm run lint
 ```
+
